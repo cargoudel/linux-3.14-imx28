@@ -1,6 +1,6 @@
 #
 # Automatically generated file; DO NOT EDIT.
-# Linux/arm 3.14.73 Kernel Configuration
+# Linux/arm 3.14.79 Kernel Configuration
 #
 CONFIG_ARM=y
 CONFIG_SYS_SUPPORTS_APM_EMULATION=y
@@ -1174,6 +1174,7 @@ CONFIG_ETHERNET=y
 # CONFIG_NET_VENDOR_FARADAY is not set
 CONFIG_NET_VENDOR_FREESCALE=y
 CONFIG_FEC=y
+# CONFIG_MARVELL_SWITCH_WORKAROUND_FEC is not set
 # CONFIG_NET_VENDOR_INTEL is not set
 # CONFIG_NET_VENDOR_MARVELL is not set
 # CONFIG_NET_VENDOR_MICREL is not set
@@ -3068,4 +3069,3 @@ CONFIG_AVERAGE=y
 # CONFIG_DDR is not set
 CONFIG_OID_REGISTRY=y
 # CONFIG_VIRTUALIZATION is not set
-# 
