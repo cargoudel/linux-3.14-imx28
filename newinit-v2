@@ -1,0 +1,393 @@
+#!/bin/busybox sh
+
+export PATH=/bin:/sbin
+/bin/busybox --install -s
+ln -s /slib/libc.so.0 /slib/libgcc_s.so.1
+mount -t devtmpfs devtmpfs /dev
+. /ts.subr
+
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mkdir /etc/
+ln -s /dev/resolv.conf /etc/resolv.conf
+mkdir /dev/pts
+mount -t devpts devpts /dev/pts
+ifconfig lo 127.0.0.1 up
+route add -net 127.0.0.0 netmask 255.0.0.0 lo
+eval `tshwctl --getmac --info --baseboard`
+export MODEL=${model#0x}
+export jp1 jp2 jp3 jp4 jp5 jp6 jp7
+export shortmac
+export bootname
+
+#if jumper on SD card force jp1 high
+if [ $(($bootmode & 0x1)) == 1 ]; then
+        jp1=1
+        export jp1
+else
+	jp1=0
+        export jp1
+fi
+
+export rootcheck="yes"
+
+stty -F /dev/ttyAMA0 ospeed 115200 raw -echo >/dev/null 2>&1
+eval `xuartctl --server --proxy 2>&1`
+xuarg="--port=127.0.0.1:$tcp_port"
+xuartctl $xuarg </dev/ttyAMA0 >/dev/ttyAMA0 2>&1 &
+export CONSOLE=$ttyname
+
+echo -e "#!/bin/sh\nstty raw -echo -isig && exec xuartctl $xuarg\n" > /xuartlogin
+chmod +x /xuartlogin
+
+stty -F $CONSOLE ospeed 115200 sane >/dev/null 2>&1
+setconsole -r $CONSOLE
+stty -F $CONSOLE rows 25 cols 80 isig
+
+bootname
+
+#Enable USB port power
+tshwctl --setdio 69 
+
+echo $MODEL > /dev/tsmodel
+echo $baseboard_model > /dev/tsbaseboardid
+echo $baseboard > /dev/tsbaseboard
+echo -1 > /proc/sys/kernel/sched_rt_runtime_us
+hostname ts${MODEL}-$shortmac
+
+tshwctl -W
+echo 2 > /dev/watchdog
+
+while [ -z "$first_linux_part" ]; do
+	first_linux_part=`fdisk -l /dev/mmcblk0 | sed '/83 L/!d;s/ .*//;q'`
+done
+
+echo a2 > /dev/watchdog
+
+if [ $jp7 = 0 ]; then
+  eval `dblstorctl -p /dev/mmcblk0 2>&1`
+  if [ $autodetect_ok = "1" ]; then
+        if [ $fb_offset -lt 0 ]; then
+          ARG="-F /dev/mmcblk1"
+          x=0
+          while [ "$x" -lt 30 -a ! -e /dev/mmcblk1 ]; do
+            x=$((x+1))
+            sleep .1
+          done
+        fi
+	dblstorctl -p /dev/mmcblk0 $ARG --nbd=lun0:disc,lun0
+	first_linux_part=`fdisk -l /dev/nbd0 | sed '/83 L/!d;s/ .*//;q'`
+  fi
+fi
+
+ln -s $first_linux_part /dev/rootfs
+mount -o ro $first_linux_part /mnt/root
+mount -o bind /mnt/root/etc /etc/
+ln -s /mnt/root/usr /usr
+ln -s /mnt/root/lib /lib
+ln -s /mnt/root/var/lib/ /var/lib
+mkdir /var/cache
+ln -s /mnt/root/var/cache/fontconfig /var/cache/
+
+if [ -e /mnt/root/ts/config ]; then
+	source /mnt/root/ts/config
+	export CFG_USBINIT CFG_USBTIME
+fi
+
+if [ $jp1 -eq 0 -o -e /mnt/root/ts/fastboot ]; then
+  (
+	if [ $jp1 -eq 1 -a -e /mnt/root/ts/fastboot ]; then 
+	  echo "/ts/fastboot file present.  Booting to initramfs instead" > $CONSOLE
+	fi
+	export ENV=/shinit
+	export PATH=$PATH:/mnt/root/bin:/mnt/root/sbin:/usr/bin:/usr/sbin
+	if [ "$CFG_CONSOLE_EN" == "0" ]; then
+		echo "<Disabled>" >$CONSOLE
+		setsid sh -c 'while true; do read; done'
+	else
+		setsid sh -c 'exec sh <$CONSOLE >$CONSOLE 2>&1'
+	fi
+  ) <$CONSOLE >$CONSOLE 2>&1 &
+  shell_pid=$!
+  export shell_pid
+fi
+
+if [ $jp7 = 0 ]; then
+	if [ "$CFG_FPGARELOAD" != "0" ]; then
+		if [ -e /mnt/root/ts/ts${MODEL}-fpga.vme.bz2 ]; then 	
+			cp /mnt/root/ts/ts${MODEL}-fpga.vme.bz2 /tmp/
+			eval $(tshwctl --loadfpga /tmp/ts${MODEL}-fpga.vme.bz2)
+			if [ "$loadfpga_ok" != "1" ]; then
+				echo "FPGA Reload Failed: $loadfpga_error" >$CONSOLE
+				echo "$loadfpga_error" > /tmp/fpgaerror
+			fi
+			tshwctl --redledoff --greenledon
+		fi
+	fi
+
+	if [ "$CFG_NETCONS_EN" != "0" ]; then
+		telnetd -l /xuartlogin
+		if [ "$CFG_DNSSD_EN" != "0" ]; then
+			dns-sd -R "TS-${MODEL} console [$shortmac]" _telnet._tcp local 23 </dev/null >/dev/null 2>&1 &
+		fi
+	fi
+
+	xuartctl --server "$CFG_XUARGS"
+
+	if [ $jp1 = 0 ]; then
+		if [ "$CFG_TELNET_EN" != "0" ]; then 
+			telnetd -p 2323 -l /bin/sh -F & 
+			telnet_pid=$!
+
+			if [ "$CFG_DNSSD_EN" != "0" ]; then
+				dns-sd -R "TS-${MODEL} console [$shortmac]" _telnet._tcp local 2323 </dev/null >/dev/null 2>&1 &
+			fi
+		fi
+
+		if [ "$CFG_MDNS_EN" != "0" ]; then
+			bunzip2 /sbin/mdnsd.bz2
+			mdnsd
+		fi
+
+		if [ "$CFG_HTTPD_EN" != "0" ]; then
+			httpd </dev/null >/dev/null 2>&1
+			if [ "$CFG_DNSSD_EN" != "0" ]; then
+				dns-sd -R "TS-${MODEL} http [$shortmac]" _http._tcp local 80 </dev/null >/dev/null 2>&1 &
+			fi
+		fi
+	fi
+
+	# needed for usb otg host
+	#modprobe g_zero
+	#echo 1 > /proc/driver/otg
+
+	mac2=$(printf "%x\n" $(echo $((0x$shortmac+1))) | sed "s/.*\(..\)\(..\)\(..\)/00:d0:69:\1:\2:\3/")
+	mac3=$(printf "%x\n" $(echo $((0x$shortmac+2))) | sed "s/.*\(..\)\(..\)\(..\)/00:d0:69:\1:\2:\3/")
+	cp /mnt/root/ts/$baseboard.calib /slib/ts_calib >/dev/null 2>&1
+	if [ $baseboard = "8920" ]; then
+		ONBOARDSW="1"
+		muxbus_enable
+		tshwctl --bbclkon --txenon 0,2,4
+		lcd_enable
+		sgtl5000_setup
+		can_enable
+		sound_enable
+		show_splash 800x600
+		start_xinit
+	elif [ $baseboard = "8900" ]; then
+		muxbus_enable
+		tshwctl --bbclkon --txenon 0,4
+		can_enable
+		usbeth_enable
+		lcd_enable
+		sgtl5000_setup
+		sound_enable
+		show_splash 800x600
+		start_xinit
+	elif [ $baseboard = "8820" ]; then
+		tshwctl --bbclkon # fpga clock
+		tshwctl --txenon 0,4 # modbus port
+		muxbus_enable
+	elif [ $baseboard = "8700" ]; then
+		tshwctl --bbclk2on # switchchip clock
+		reset_bb_switch
+		tshwctl --txenon 0,1 # modbus port
+		OFFBOARDSW="1"
+	elif [ $baseboard = "8500" ]; then
+		tshwctl --txenon 0
+	elif [ $baseboard = "8400" ]; then
+		tshwctl --txenon=0,4 --touchon
+		can_enable
+		usbeth_enable
+		#Set screen to correct orientation
+		tshwctl --clrdio 40
+		modprobe lcd_okaya7 xres=640 yres=480
+		lcd_enable
+		wm8750_setup
+		sound_enable
+		show_splash 640x480
+		start_xinit
+	elif [ $baseboard = "8390" ]; then
+		tshwctl --txenon=0,4 --touchon
+		can_enable
+		usbeth_enable
+		lcd_enable
+		sgtl5000_setup
+		sound_enable
+		show_splash 800x480
+		start_xinit
+	elif [ $baseboard = "8380" ]; then
+		ONBOARDSW="1"
+		tshwctl --touchon --txenon 0
+		#tshwctl --setdio 31 # en_backlight
+		#tshwctl --setdio 27 # modem 5v power
+		#tshwctl --clrdio 30 # en_spkr#
+		lcd_enable
+		sgtl5000_setup
+		sound_enable
+		show_splash 800x480
+		start_xinit
+	elif [ $baseboard = "8280" ]; then
+		tshwctl --txenon 0 # modbus port
+		modprobe ts-st7565p-fb
+		ONBOARDSW="1"
+	elif [ $baseboard = "8290" ]; then
+		lcd_enable
+		#modprobe hdmi_sii9022
+		#modprobe snd-soc-ts4700
+		sound_enable
+		show_splash 800x600
+		start_xinit
+	elif [ $baseboard = "8150" ]; then
+		ONBOARDSW="1"
+		muxbus_enable
+		tshwctl --txenon=0,4 --bbclk3on
+	elif [ $baseboard = "8160" ]; then
+		muxbus_enable
+		#devmem 0x80008002 16 0x3d00 # disable can standby
+		tshwctl --txenon=0,4
+		can_enable
+	elif [ $baseboard = "8100" ]; then	
+		muxbus_enable
+		tshwctl --txenon=0,4 
+		can_enable
+		usbeth_enable
+	fi
+fi
+
+
+if [ $jp7 != 1 ]; then
+	if [ $MODEL = 4600 ]; then
+		if [ "$CFG_2ETH" = "2" ]; then
+			tshwctl --ethswitch
+		elif [ "$CFG_2ETH" = "1" ] || [ -n "$ONBOARDSW" ]; then
+			SWIFACE="eth0"
+			vconfig add eth0 1
+			vconfig add eth0 2
+			ifconfig eth0 up
+			tshwctl --ethvlan 
+			ifconfig eth0.1 up
+			ifconfig eth0.2 up
+		else
+			ifconfig eth0 up
+			tshwctl --ethswitch
+		fi
+	else
+		unset $ONBOARDSW
+	fi
+
+	if [ -n "$OFFBOARDSW" ]; then
+		if [ "$CFG_4ETH" = "2" ]; then
+			tshwctl --ethswitch --ethbb
+		else
+			SWIFACE="eth0"
+			if [ "$CFG_4ETH" = "1" ]; then
+				vconfig add $SWIFACE 1
+				vconfig add $SWIFACE 2
+				tshwctl --ethwlan --ethbb
+				ifconfig $SWIFACE up
+				ifconfig $SWIFACE.1 up
+				ifconfig $SWIFACE.2 up
+			else
+				vconfig add $SWIFACE 1
+				vconfig add $SWIFACE 2
+				vconfig add $SWIFACE 3
+				vconfig add $SWIFACE 4
+				tshwctl --ethvlan --ethbb
+				ifconfig $SWIFACE up
+				ifconfig $SWIFACE.1 up
+				ifconfig $SWIFACE.2 up
+				ifconfig $SWIFACE.3 up
+				ifconfig $SWIFACE.4 up
+			fi
+		fi
+	fi
+
+	if [ $jp1 = 0 -a "$CFG_IFPLUGD_EN" != "0" ]; then
+		# start ifplugd on interfaces unless an onboard or offboard switch is used
+		# if using a switch ifplugd is only started on eth#.0-7 interfaces
+		for iface in $(ls /sys/class/net | grep "eth")
+		do
+			if [ "$iface" != "$SWIFACE" ]; then
+				ifplugd -s -F -i $iface </dev/null >/dev/null 2>&1
+			fi
+		done
+	fi
+fi
+
+ln -sf $CONSOLE /dev/tsconsole
+
+tshwctl --setrng --redledoff --greenledon
+if [ "$CFG_RESETSW_EN" != "0" ]; then
+	tshwctl --resetswitchon
+fi
+
+modprobe flexcan
+
+# Run user init scripts
+(
+	export PATH=$PATH:/mnt/root/bin:/mnt/root/sbin:/usr/bin:/usr/sbin
+	if [ -x /mnt/root/ts/init ]; then /mnt/root/ts/init; fi
+
+	if [ $jp7 = 0 ]; then 
+		if [ "$CFG_USBINIT" != "0" -a $jp1 = 0 ]; then
+			/check-usb-update
+		elif [ "$CFG_USBINIT" = "2" ]; then
+			/check-usb-update
+		fi
+	fi
+) <$CONSOLE >$CONSOLE 2>&1
+
+if [ -n "$shell_pid" ]; then wait $shell_pid; fi
+killall -9 ifplugd dns-sd zcip udhcpc httpd mdnsd X >/dev/null 2>&1
+kill -9 $telnet_pid
+
+# Blank FB if it exists, and we booted X11 from the initramfs
+if [ -e /dev/fb0 -a $jp1 = 0 ]; then
+	dd if=/dev/zero bs=1920 count=1080 of=/dev/fb0 >/dev/null 2>&1
+fi
+
+if [ $jp6 == 0 ]; then
+	mkdir -p /mnt/ramdisk /mnt/root.ro /mnt/root.rw
+	mount -t tmpfs -o size=10M root.rw /mnt/root.rw
+	mount -t tmpfs -o size=2M tmpfs /mnt/ramdisk/
+	mount -t ext3 -o ro,relatime,errors=continue,user_xattr,barrier=1,data=ordered /dev/mmcblk0p2 /mnt/root.ro
+
+	umount /mnt/root
+	chmod 755 /mnt/root
+	mount -t aufs -o br=/mnt/root.rw=rw:/mnt/root.ro=ro none /mnt/root/
+
+	mkdir -p /mnt/root/ro /mnt/root/rw /mnt/root/ramdisk
+	mount --move /mnt/root.ro /mnt/root/ro
+	mount --move /mnt/root.rw /mnt/root/rw
+	mount --move /mnt/ramdisk /mnt/root/ramdisk
+
+	mkdir -p /mnt/root/ramdisk/run /mnt/root/ramdisk/run/lock /mnt/root/ramdisk/lib /mnt/root/ramdisk/cron
+	mkdir -p /mnt/root/run /mnt/root/var/lib /mnt/root/var/cron
+
+	mount --bind /mnt/root/ramdisk/run /mnt/root/run
+	mount --bind /mnt/root/ramdisk/lib /mnt/root/var/lib
+	mount --bind /mnt/root/ramdisk/cron /mnt/root/var/cron
+
+	mkdir -p /mnt/root/var/log/v2g /mnt/root/var/lib/dbus /mnt/root/var/cron/tabs /mnt/root/var/lib/dhcp
+
+	rm -f /mnt/root/run/* /mnt/root/run/lock/*
+	echo "Done mounting aufs!" > $CONSOLE
+fi
+
+if [ -e /mnt/root/sbin/init ]; then
+	mkdir -p /mnt/root/storage
+	mount -t proc proc /mnt/root/proc
+	mount -t devtmpfs devtmpfs /mnt/root/dev
+	mount -t devpts devpts /mnt/root/dev/pts
+	mount -t tmpfs tmpfs /mnt/root/slib
+	mount -t tmpfs tmpfs /mnt/root/ts/sbin/
+        mount -t ext3 -o rw,relatime,errors=continue,user_xattr,barrier=1,data=ordered /dev/mmcblk0p3 /mnt/root/storage
+	mkdir -p /mnt/root/var/lib/binfmts
+	umount /etc/
+	cp /sbin/* /mnt/root/ts/sbin/
+	cp /slib/* /mnt/root/slib/
+	cp /bin/busybox /mnt/root/ts/sbin/
+	export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+	exec switch_root /mnt/root /sbin/init < $CONSOLE > $CONSOLE 2>&1
+fi
