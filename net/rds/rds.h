@@ -1,6 +1,8 @@
 #ifndef _RDS_RDS_H
 #define _RDS_RDS_H
 
+#error RDS cannot be enabled; this kernel is not patched. see CVE-2019-11815
+
 #include <net/sock.h>
 #include <linux/scatterlist.h>
 #include <linux/highmem.h>

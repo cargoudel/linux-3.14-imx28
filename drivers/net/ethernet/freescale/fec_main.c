@@ -188,7 +188,7 @@ MODULE_PARM_DESC(macaddr, "FEC Ethernet MAC address");
 #define FEC_ENET_MII	((uint)0x00800000)	/* MII interrupt */
 #define FEC_ENET_EBERR	((uint)0x00400000)	/* SDMA bus error */
 
-#define FEC_DEFAULT_IMASK (FEC_ENET_TXF | FEC_ENET_RXF | FEC_ENET_MII)
+#define FEC_DEFAULT_IMASK (FEC_ENET_TXF | FEC_ENET_RXF | FEC_ENET_MII | FEC_ENET_EBERR)
 #define FEC_RX_DISABLED_IMASK (FEC_DEFAULT_IMASK & (~FEC_ENET_RXF))
 
 /* The FEC stores dest/src/type/vlan, data, and checksum for receive packets.
@@ -295,6 +295,31 @@ static void *swap_buffer(void *bufaddr, int len)
 		*buf = cpu_to_be32(*buf);
 
 	return bufaddr;
+}
+
+/* Re-enable the controller after an ethernet bus error.
+ *
+ * Reference manual: This bit indicates a system bus
+ * error occurs when a DMA transaction is underway
+ * (Signal dma_eberr_int asserted). When the EBERR bit
+ * is set, ETHER_EN is cleared, halting frame processing
+ * by the MAC. When this occurs, software needs to insure
+ * proper actions (possibly resetting the system) to resume
+ * normal operation.
+ *
+ * This seems to happen when we restart the controller.
+ */
+static inline void fec_enet_clear_eberr_if_needed(struct net_device *ndev)
+{
+       struct fec_enet_private *fep = netdev_priv(ndev);
+       u32 ctl = readl(fep->hwp + FEC_ECNTRL);
+
+       if (!(ctl & 2)) {
+               ctl |= 2;
+               writel(FEC_ENET_EBERR, fep->hwp + FEC_IEVENT);
+               writel(ctl, fep->hwp + FEC_ECNTRL);
+               netdev_warn(ndev, "Re-enabled after EBERR\n");
+       }
 }
 
 static int
@@ -1100,6 +1125,10 @@ fec_enet_interrupt(int irq, void *dev_id)
 			ret = IRQ_HANDLED;
 			complete(&fep->mdio_done);
 		}
+
+                if (int_events & FEC_ENET_EBERR)
+                        fec_enet_clear_eberr_if_needed(ndev);
+
 	} while (int_events);
 
 	return ret;
@@ -1241,6 +1270,8 @@ static int fec_enet_mdio_read(struct mii_bus *bus, int mii_id, int regnum)
 	struct fec_enet_private *fep = bus->priv;
 	unsigned long time_left;
 
+        fec_enet_clear_eberr_if_needed(fep->netdev);
+
 	fep->mii_timeout = 0;
 	init_completion(&fep->mdio_done);
 
@@ -1267,6 +1298,8 @@ static int fec_enet_mdio_write(struct mii_bus *bus, int mii_id, int regnum,
 {
 	struct fec_enet_private *fep = bus->priv;
 	unsigned long time_left;
+
+        fec_enet_clear_eberr_if_needed(fep->netdev);
 
 	fep->mii_timeout = 0;
 	init_completion(&fep->mdio_done);
@@ -2326,6 +2359,7 @@ fec_drv_remove(struct platform_device *pdev)
 static int
 fec_suspend(struct device *dev)
 {
+/*
 	struct net_device *ndev = dev_get_drvdata(dev);
 	struct fec_enet_private *fep = netdev_priv(ndev);
 
@@ -2342,13 +2376,14 @@ fec_suspend(struct device *dev)
 
 	if (fep->reg_phy)
 		regulator_disable(fep->reg_phy);
-
+*/
 	return 0;
 }
 
 static int
 fec_resume(struct device *dev)
 {
+/*	
 	struct net_device *ndev = dev_get_drvdata(dev);
 	struct fec_enet_private *fep = netdev_priv(ndev);
 	int ret;
@@ -2383,9 +2418,10 @@ fec_resume(struct device *dev)
 		fec_restart(ndev, fep->full_duplex);
 		netif_device_attach(ndev);
 	}
+*/
 
 	return 0;
-
+/*
 failed_clk_ptp:
 	if (fep->clk_enet_out)
 		clk_disable_unprepare(fep->clk_enet_out);
@@ -2396,7 +2432,8 @@ failed_clk_ipg:
 failed_clk_ahb:
 	if (fep->reg_phy)
 		regulator_disable(fep->reg_phy);
-	return ret;
+	return ret; 
+*/
 }
 #endif /* CONFIG_PM_SLEEP */
 
