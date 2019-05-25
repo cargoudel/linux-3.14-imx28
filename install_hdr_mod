@@ -7,10 +7,10 @@ if [ $# -ne 1 ] ; then
 fi
 
 mkdir mount_point/ &&\
-mount /dev/$1 mount_point/ && sleep 1 &&\
+sudo mount /dev/$1 mount_point/ &&\
 (
   echo "Installing kernel modules to device $1"
-  INSTALL_MOD_PATH=mount_point/ make modules_install >/dev/null 2>&1 
+  INSTALL_MOD_PATH=mount_point/ sudo -E make modules_install >/dev/null 2>&1 
   if [ $? -ne "0" ] ; then
     echo "Failed to install modules to device $1"
     exit 1
@@ -35,7 +35,5 @@ mount /dev/$1 mount_point/ && sleep 1 &&\
   fi
 ) &&\
 
-sync
-sleep 1
 sudo umount mount_point
 rmdir mount_point
