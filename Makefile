@@ -1,7 +1,12 @@
 VERSION = 3
 PATCHLEVEL = 14
 SUBLEVEL = 79
-EXTRAVERSION =
+
+SHORT_GIT_VERSION := $(shell git rev-parse --short HEAD)
+GIT_BRANCH := $(shell git branch | awk '{print $2}')
+EXTRAVERSION := $(GIT_BRANCH)-$(SHORT_GIT_VERSION)  
+$(info    EXTRAVERSION is $(EXTRAVERSION))
+
 NAME = Remembering Coco
 
 # *DOCUMENTATION*
