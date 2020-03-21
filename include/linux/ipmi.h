@@ -33,8 +33,6 @@
 #ifndef __LINUX_IPMI_H
 #define __LINUX_IPMI_H
 
-#error IPMI cannot be enabled; this kernel is not patched. see CVE-2019-11811
-
 #include <uapi/linux/ipmi.h>
 
 #include <linux/list.h>
